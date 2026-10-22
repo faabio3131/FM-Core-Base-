@@ -31,6 +31,7 @@ class MatchedProviderStatement:
     source_issuer: str
     provider_statement_cost_usd: Decimal | None
     internally_estimated_cost_usd: Decimal | None
+    matched_fallback_attempt: bool = False
     status: str = "signed_statement_matches_single_attempt"
     invoice_verified: bool = False
 
@@ -56,21 +57,35 @@ def match_signed_provider_attempt(
             AIUsageRecord.tenant_id == tenant_id,
             AIUsageRecord.unit_id == unit_id,
             AIUsageRecord.request_id == request_id,
-        ).limit(2)).all()
-    # A request can have multiple physical attempts or fallback: a provider's
-    # request-wide statement cannot be silently allocated among them.
-    if len(events) != 1:
+        ).limit(101)).all()
+    # Never infer a provider receipt from a truncated routing history.
+    if len(events) > 100:
+        raise ControlPlaneError("core_finops.provider_match_unbounded_attempts")
+    if not events:
         raise ControlPlaneError("core_finops.provider_match_ambiguous_attempts")
-    event = events[0]
-    if (
-        event.provider != receipt.provider or event.model != receipt.model
-        or event.input_tokens is None or event.output_tokens is None
-        or event.input_tokens != receipt.input_tokens
-        or event.output_tokens != receipt.output_tokens
-        or event.outcome != "success"
-        or event.fallback_used
-        or not event.event_id
+
+    same_route = [
+        event for event in events
+        if event.provider == receipt.provider and event.model == receipt.model
+    ]
+    # An unknown/unmetered event on the SAME physical provider/model may
+    # represent the signed statement. Do not attribute it to another event.
+    if any(
+        event.input_tokens is None or event.output_tokens is None
+        for event in same_route
     ):
+        raise ControlPlaneError("core_finops.provider_match_ambiguous_attempts")
+    matches = [
+        event for event in same_route
+        if event.input_tokens == receipt.input_tokens
+        and event.output_tokens == receipt.output_tokens
+    ]
+    if len(matches) != 1:
+        raise ControlPlaneError("core_finops.provider_match_ambiguous_attempts")
+    event = matches[0]
+    # Even with a unique usage tuple, a failed or unidentifiable event
+    # cannot prove its billed attempt. A successfully billed fallback can.
+    if event.outcome != "success" or not event.event_id:
         raise ControlPlaneError("core_finops.provider_match_mismatch")
     known = _observed_cost(event.cost_decimal)
     if event.currency != "USD" and known is not None:
@@ -82,4 +97,5 @@ def match_signed_provider_attempt(
         attempt_id=event.event_id, source_issuer=source_policy.issuer,
         provider_statement_cost_usd=receipt.provider_cost_usd,
         internally_estimated_cost_usd=known,
+        matched_fallback_attempt=bool(event.fallback_used),
     )
