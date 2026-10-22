@@ -343,6 +343,52 @@ class PersistentAIFinOps:
         )
         return items, len(results) > limit
 
+    def listar_ids_solicitacoes(
+        self, *, tenant_id: str, unit_id: str,
+        inicio: date, fim: date, after_request_id: str | None = None,
+        limit: int = 50,
+    ) -> tuple[tuple[str, ...], str | None]:
+        """Bounded deterministic pages for a corporate FinOps alert inbox.
+
+        All pages are scoped to one tenant/unit/window. A missing next cursor
+        never proves provider invoicing, only that this observed page ended.
+        """
+        if (
+            any(type(v) is not str or not v.strip() or len(v) > 128
+                for v in (tenant_id, unit_id))
+            or type(inicio) is not date or type(fim) is not date
+            or fim < inicio or (fim - inicio).days >= 31
+            or fim == date.max or type(limit) is not int
+            or not 1 <= limit <= 100
+            or (after_request_id is not None and (
+                type(after_request_id) is not str
+                or not 1 <= len(after_request_id) <= 128
+                or any(c.isspace() for c in after_request_id)
+            ))
+        ):
+            raise ControlPlaneError("core_finops.alert_inbox_scope_invalid")
+        start = datetime.combine(inicio, time.min, tzinfo=UTC)
+        end = datetime.combine(date.fromordinal(fim.toordinal() + 1), time.min, tzinfo=UTC)
+        conditions = [
+            AIUsageRecord.tenant_id == tenant_id,
+            AIUsageRecord.unit_id == unit_id,
+            AIUsageRecord.event_time >= start,
+            AIUsageRecord.event_time < end,
+        ]
+        if after_request_id is not None:
+            conditions.append(AIUsageRecord.request_id > after_request_id)
+        query = (
+            select(AIUsageRecord.request_id)
+            .where(*conditions)
+            .distinct()
+            .order_by(AIUsageRecord.request_id)
+            .limit(limit + 1)
+        )
+        with self._sessions() as db:
+            ids = tuple(db.scalars(query).all())
+        page = ids[:limit]
+        return page, page[-1] if len(ids) > limit else None
+
     def reconcile_request(
         self, *, tenant_id: str, unit_id: str, request_id: str,
     ) -> AIRequestCostSummary:
