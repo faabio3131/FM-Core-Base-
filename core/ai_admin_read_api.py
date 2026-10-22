@@ -184,6 +184,68 @@ def register_admin_read_routes(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store"},
         )
 
+    @router.get("/usage/alerts")
+    def list_finops_alerts(
+        request: Request,
+        tenant_id: str = Query(min_length=1, max_length=128),
+        unit_id: str = Query(min_length=1, max_length=128),
+        start_date: date = Query(),
+        end_date: date = Query(),
+        limit: int = Query(default=50, ge=1, le=100),
+        after_request_id: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> JSONResponse:
+        """FM-only bounded alert inbox. No provider invoice proof or quota mutation."""
+        try:
+            sessions = _sessions(request)
+            policy = PersistentFinOpsAlertPolicies(sessions).get(
+                tenant_id=tenant_id, unit_id=unit_id,
+            )
+            store = PersistentAIFinOps(sessions)
+            ids, next_cursor = store.listar_ids_solicitacoes(
+                tenant_id=tenant_id, unit_id=unit_id,
+                inicio=start_date, fim=end_date,
+                after_request_id=after_request_id, limit=limit,
+            )
+            items = []
+            for request_id in ids:
+                alert = evaluate_request_cost_alert(
+                    store.reconcile_request(
+                        tenant_id=tenant_id, unit_id=unit_id, request_id=request_id,
+                    ),
+                    maximum_known_cost=(
+                        policy.maximum_known_cost if policy and policy.enabled else None
+                    ),
+                    currency=policy.currency if policy and policy.enabled else None,
+                )
+                items.append({
+                    "request_id": request_id,
+                    "status": alert.status, "reasons": list(alert.reasons),
+                    "known_cost_subtotal": str(alert.known_cost),
+                    "currency": alert.cost_currency,
+                    "unknown_attempts": alert.unknown_attempts,
+                    "observed_attempts": alert.observed_attempts,
+                    "all_recorded_costs_known": alert.all_costs_known,
+                    "provider_invoice_verified": False,
+                })
+        except (ControlPlaneError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail="core_finops.alert_inbox_invalid",
+            ) from exc
+        except (SQLAlchemyError, TypeError, ArithmeticError) as exc:
+            raise HTTPException(
+                status_code=503, detail="core_finops.alert_inbox_unavailable",
+            ) from exc
+        return JSONResponse({
+            "tenant_id": tenant_id, "unit_id": unit_id,
+            "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
+            "policy_revision": policy.revision if policy else None,
+            "policy_enabled": policy.enabled if policy else False,
+            "next_cursor": next_cursor,
+            "has_more": next_cursor is not None,
+            "provider_invoice_verified": False,
+            "items": items,
+        }, headers={"Cache-Control": "no-store"})
+
     @router.get("/finops/alert-policy")
     def read_finops_alert_policy(
         request: Request,
