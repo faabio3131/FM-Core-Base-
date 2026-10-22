@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from alembic import command
-from core.ai_control_plane import AIControlPlaneStore, RouteDefinition
 from core.ai_command_authority import VerifiedCommandAdmin
+from core.ai_control_plane import AIControlPlaneStore, RouteDefinition
 from core.ai_finops_policy_store import PersistentFinOpsAlertPolicies
 from core.ai_router import AIUsageEvent, CapabilityIA, OutcomeIA
 from core.ai_service_api import create_app
@@ -218,7 +219,7 @@ def test_operator_reads_persisted_fm_threshold_and_cannot_override_it(fixture):
     store = PersistentFinOpsAlertPolicies(sessions)
     assert store.update(
         tenant_id="tenant-a", unit_id="unit-1", expected_revision=0,
-        enabled=True, currency="USD", maximum_known_cost=__import__("decimal").Decimal("0.03"),
+        enabled=True, currency="USD", maximum_known_cost=Decimal("0.03"),
         principal=principal,
     ).revision == 1
     with TestClient(create_app(_cfg(fixture))) as client:
