@@ -5,13 +5,13 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from core.ai_control_plane import ControlPlaneBase
+from core.ai_control_plane import ControlPlaneBase, ControlPlaneError
 from core.ai_pricing import PriceSnapshotIA, SnapshotPrecoDuplicado, TarifaIA
 from core.ai_router import AIUsageEvent, CapabilityIA, OutcomeIA
-from core.ai_usage_ledger import PersistentAIFinOps
+from core.ai_usage_ledger import AIUsageRecord, PersistentAIFinOps
 
 
 @pytest.fixture
@@ -266,3 +266,30 @@ def test_finops_alert_requires_evidence_and_exact_currency(ledger):
         evaluate_request_cost_alert(
             summary, maximum_known_cost=Decimal("NaN"), currency="USD",
         )
+
+
+@pytest.mark.parametrize("tampered_cost", ["-0.01", "NaN", "Infinity", "corrupt"])
+def test_corrupt_attempt_cost_cannot_be_offset_by_valid_positive_cost(ledger, tampered_cost):
+    store, sessions = ledger
+    store.add_price_snapshot(price())
+    first = event(request="bad-cost")
+    second = replace(
+        first,
+        route_reason="capability=text;priority=90",
+        fallback_used=True,
+        fallback_reason="retry",
+    )
+    store.registrar(first)
+    store.registrar(second)
+    with sessions.begin() as db:
+        row = db.scalars(select(AIUsageRecord).where(
+            AIUsageRecord.request_id == "bad-cost",
+            AIUsageRecord.fallback_used.is_(True),
+        )).one()
+        row.cost_decimal = tampered_cost
+
+    # An invalid attempt must not be hidden by a valid +0.05 subtotal.
+    with pytest.raises(ControlPlaneError, match="invalid_known_cost"):
+        store.reconcile_request(tenant_id="a", unit_id="u", request_id="bad-cost")
+    with pytest.raises(ControlPlaneError, match="invalid_known_cost"):
+        _list(store)
