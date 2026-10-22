@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, select
@@ -83,6 +83,23 @@ def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _observed_cost(value: str | None) -> Decimal | None:
+    """Check each provider attempt separately, before cost aggregation.
+
+    Offsetting a negative or corrupt record with a positive one would forge
+    a plausible subtotal and hide a damaged ledger in FM Command.
+    """
+    if value is None:
+        return None
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ControlPlaneError("core_finops.invalid_known_cost") from exc
+    if not amount.is_finite() or amount < 0:
+        raise ControlPlaneError("core_finops.invalid_known_cost")
+    return amount
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -262,10 +279,9 @@ class PersistentAIFinOps:
             }
             if len(currencies) > 1:
                 raise ControlPlaneError("core_finops.mixed_currency")
-            known = [item for item in rows if item.cost_decimal is not None]
-            total = sum((Decimal(item.cost_decimal) for item in known), Decimal(0))
-            if not total.is_finite() or total < 0:
-                raise ControlPlaneError("core_finops.invalid_known_cost")
+            known_amounts = [_observed_cost(item.cost_decimal) for item in rows]
+            known = [amount for amount in known_amounts if amount is not None]
+            total = sum(known, Decimal(0))
             unknown = len(rows) - len(known)
             return AIRequestCostSummary(
                 tenant_id=tenant_id,
@@ -326,7 +342,10 @@ class PersistentAIFinOps:
                         cost_known_events=sum(x.cost_decimal is not None for x in events),
                         cost_unknown_events=sum(x.cost_decimal is None for x in events),
                         cost_total=sum(
-                            (Decimal(x.cost_decimal) for x in events if x.cost_decimal is not None),
+                            (
+                                amount for item in events
+                                if (amount := _observed_cost(item.cost_decimal)) is not None
+                            ),
                             Decimal(0),
                         ),
                     )
