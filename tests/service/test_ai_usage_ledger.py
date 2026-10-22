@@ -312,3 +312,63 @@ def test_two_physical_provider_calls_same_request_and_route_are_both_accounted(l
     assert summary.all_recorded_costs_known is True
     entries = _list(store)
     assert sum(item.attempts for item in entries) == 2
+
+
+def test_reconciliation_backlog_is_scoped_bounded_and_groups_fallback_attempts(ledger):
+    store, _ = ledger
+    store.add_price_snapshot(price())
+    store.registrar(event(request="request-a"))  # known internal estimate
+    store.registrar(replace(
+        event(request="request-a", price_id="unknown-a"),
+        fallback_used=True, route_reason="capability=text;priority=90",
+        input_tokens=None, output_tokens=None,
+    ))
+    store.registrar(event(request="request-b", inp=None))
+    store.registrar(event(request="verified"))  # no unresolved attempts
+    store.registrar(event(request="foreign", tenant="other", inp=None))
+    store.registrar(event(request="other-unit", unit="other", inp=None))
+
+    first, truncated = store.listar_pendencias(
+        tenant_id="a", unit_id="u", inicio=date(2026, 10, 18),
+        fim=date(2026, 10, 18), limit=1,
+    )
+    assert truncated is True
+    assert len(first) == 1
+    assert first[0].request_id == "request-a"
+    assert first[0].observed_attempts == 2
+    assert first[0].fallback_attempts == 1
+    assert first[0].unknown_cost_attempts == 1
+    assert first[0].incomplete_token_attempts == 1
+
+    all_items, truncated = store.listar_pendencias(
+        tenant_id="a", unit_id="u", inicio=date(2026, 10, 18),
+        fim=date(2026, 10, 18), limit=100,
+    )
+    assert truncated is False
+    assert [item.request_id for item in all_items] == ["request-a", "request-b"]
+    assert all_items[1].unknown_cost_attempts == 1
+    assert store.listar_pendencias(
+        tenant_id="a", unit_id="u", inicio=date(2026, 10, 19),
+        fim=date(2026, 10, 19),
+    ) == ((), False)
+    assert store.listar_pendencias(
+        tenant_id="other", unit_id="u", inicio=date(2026, 10, 18),
+        fim=date(2026, 10, 18),
+    )[0][0].request_id == "foreign"
+
+
+@pytest.mark.parametrize("changes", [
+    {"tenant_id": " "}, {"unit_id": ""}, {"limit": True},
+    {"limit": 101}, {"limit": 0}, {"limit": 1.5},
+    {"inicio": date(2026, 10, 20)}, {"fim": date(2026, 11, 25)},
+    {"fim": date.max}, {"inicio": datetime(2026, 10, 18, 12)},
+])
+def test_reconciliation_backlog_rejects_unbounded_or_ambiguous_inputs(ledger, changes):
+    store, _ = ledger
+    valid = {
+        "tenant_id": "a", "unit_id": "u",
+        "inicio": date(2026, 10, 18), "fim": date(2026, 10, 18),
+        "limit": 50,
+    }
+    with pytest.raises(ControlPlaneError, match="pending_scope_invalid"):
+        store.listar_pendencias(**{**valid, **changes})
