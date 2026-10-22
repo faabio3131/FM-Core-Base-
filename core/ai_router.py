@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from time import perf_counter
+from uuid import uuid4
 from typing import Any, Protocol
 
 
@@ -140,8 +141,16 @@ class AIUsageEvent:
     moeda: str | None
     price_snapshot_id: str
     timestamp: datetime
+    # Optional for legacy synthetic events; real Router attempts always set it.
+    attempt_id: str | None = None
 
     def __post_init__(self) -> None:
+        if self.attempt_id is not None and (
+            type(self.attempt_id) is not str
+            or not 1 <= len(self.attempt_id) <= 128
+            or not all(c.isascii() and (c.isalnum() or c in "_-") for c in self.attempt_id)
+        ):
+            raise ValueError("ai_router.attempt_id_invalid")
         if self.latency_ms < 0:
             raise ValueError("latency_ms_invalida")
 
@@ -283,6 +292,7 @@ class AIModelRouter:
                 moeda=None,
                 price_snapshot_id=rota.price_snapshot_id,
                 timestamp=self._now(),
+                attempt_id=uuid4().hex,
             )
         )
 
