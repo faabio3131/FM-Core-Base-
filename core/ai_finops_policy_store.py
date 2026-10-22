@@ -53,7 +53,7 @@ class FinOpsAlertPolicy:
             or type(self.currency) is not str or not _CURRENCY.fullmatch(self.currency)
             or not isinstance(self.maximum_known_cost, Decimal)
             or not self.maximum_known_cost.is_finite()
-            or not Decimal(0) < self.maximum_known_cost <= Decimal("1000000000")
+            or not Decimal(0) < self.maximum_known_cost <= Decimal(1000000000)
         ):
             raise ControlPlaneError("core_finops.alert_policy_invalid")
 
