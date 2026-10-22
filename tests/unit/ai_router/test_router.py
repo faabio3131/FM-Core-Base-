@@ -276,3 +276,38 @@ def test_audio_transcription_is_routed_as_own_capability() -> None:
     assert executor.chamadas == ["a"]
     assert meter.eventos[0].capability is CapabilityIA.ATENDIMENTO_TRANSCRICAO
     assert "audio-binario" not in repr(meter.eventos[0])
+
+
+def test_router_generates_distinct_ids_for_repeated_physical_calls():
+    meter = MedidorUsoIAEmMemoria()
+    executor = ExecutorFake({
+        "a": RespostaModeloIA(conteudo="ok", input_tokens=10, output_tokens=5),
+    })
+    router = AIModelRouter(
+        rotas=(rota("a", 100),), executor=executor, metering=meter,
+        monotonic=lambda: 1.0, now=lambda: AGORA,
+    )
+    router.executar(solicitacao())
+    router.executar(solicitacao())
+    assert len(meter.eventos) == 2
+    assert meter.eventos[0].request_id == meter.eventos[1].request_id
+    assert meter.eventos[0].route_reason == meter.eventos[1].route_reason
+    assert meter.eventos[0].timestamp == meter.eventos[1].timestamp
+    assert meter.eventos[0].attempt_id
+    assert meter.eventos[1].attempt_id
+    assert meter.eventos[0].attempt_id != meter.eventos[1].attempt_id
+
+
+@pytest.mark.parametrize("bad_id", ["", " ", "/foreign", "a" * 129, True])
+def test_router_usage_rejects_invalid_explicit_attempt_id(bad_id):
+    from dataclasses import replace
+
+    meter = MedidorUsoIAEmMemoria()
+    router = AIModelRouter(
+        rotas=(rota("a", 100),),
+        executor=ExecutorFake({"a": RespostaModeloIA(conteudo="ok")}),
+        metering=meter, monotonic=lambda: 1.0, now=lambda: AGORA,
+    )
+    router.executar(solicitacao())
+    with pytest.raises(ValueError, match="attempt_id_invalid"):
+        replace(meter.eventos[0], attempt_id=bad_id)
