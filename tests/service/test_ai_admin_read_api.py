@@ -142,3 +142,63 @@ def test_operator_finops_alert_requires_admin_key_and_preserves_unknown_cost(fix
         )
         assert mismatch.status_code == 200
         assert mismatch.json()["unknown_attempts"] == 1
+
+
+def test_operator_pending_usage_is_scoped_read_only_and_uncertified(fixture):
+    with TestClient(create_app(_cfg(fixture))) as client:
+        path = "/v1/admin/ai/usage/pending"
+        params = {
+            "tenant_id": "tenant-a", "unit_id": "unit-1",
+            "start_date": "2026-10-18", "end_date": "2026-10-18",
+            "limit": 1,
+        }
+        assert client.get(path, params=params).status_code == 401
+        assert client.get(
+            path, params=params, headers={"X-Core-Service-Key": "consumer-only"},
+        ).status_code == 401
+        auth = {"X-Core-Admin-Key": "operator-secret"}
+        response = client.get(path, params=params, headers=auth)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        item = response.json()
+        assert item["status"] == "needs_attention"
+        assert item["provider_invoice_verified"] is False
+        assert item["truncated"] is False
+        assert item["items"] == [{
+            "request_id": "req",
+            "first_seen": "2026-10-18T10:00:00+00:00",
+            "last_seen": "2026-10-18T10:00:00+00:00",
+            "observed_attempts": 1,
+            "unknown_cost_attempts": 1,
+            "incomplete_token_attempts": 1,
+            "fallback_attempts": 0,
+        }]
+        assert "private-provider" not in response.text
+        assert "very-private" not in response.text
+        other = client.get(
+            path, params={**params, "tenant_id": "tenant-b"}, headers=auth,
+        )
+        assert other.status_code == 200
+        assert other.json()["items"] == []
+        assert other.json()["status"] == "no_pending_observations"
+        assert other.json()["provider_invoice_verified"] is False
+        assert client.get(
+            path, params={**params, "limit": 101}, headers=auth,
+        ).status_code == 422
+        assert client.get(
+            path, params={**params, "end_date": "2026-12-01"}, headers=auth,
+        ).status_code == 422
+        assert client.post(path, params=params, headers=auth).status_code == 405
+
+
+def test_pending_usage_operator_api_disabled_by_default(fixture):
+    with TestClient(create_app(_cfg(fixture, with_admin=False))) as client:
+        response = client.get(
+            "/v1/admin/ai/usage/pending",
+            params={
+                "tenant_id": "tenant-a", "unit_id": "unit-1",
+                "start_date": "2026-10-18", "end_date": "2026-10-18",
+            },
+            headers={"X-Core-Admin-Key": "operator-secret"},
+        )
+        assert response.status_code == 404
