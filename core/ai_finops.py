@@ -46,6 +46,9 @@ class AIFinOpsBucket:
         if len(self.moeda) != 3 or not self.moeda.isascii() or not self.moeda.isalpha():
             raise ValueError("moeda_finops_invalida")
 
+        if type(self.bucket_date) is not date:
+            raise ValueError("dia_finops_invalido")
+
         inteiros = (
             self.attempts,
             self.fallback_attempts,
@@ -57,10 +60,23 @@ class AIFinOpsBucket:
             self.cost_known_events,
             self.cost_unknown_events,
         )
-        if any(valor < 0 for valor in inteiros):
-            raise ValueError("metrica_finops_negativa")
+        # bool is an int subclass in Python; never accept it as an
+        # observed count in a corporate cost/usage report.
+        if any(type(valor) is not int or valor < 0 for valor in inteiros):
+            raise ValueError("metrica_finops_invalida")
+        if (
+            self.attempts == 0
+            or self.fallback_attempts > self.attempts
+            or self.cost_known_events + self.cost_unknown_events != self.attempts
+            or self.latency_ms_max > self.latency_ms_total
+        ):
+            raise ValueError("cobertura_finops_inconsistente")
 
-        if not self.cost_total.is_finite() or self.cost_total < 0:
+        if (
+            not isinstance(self.cost_total, Decimal)
+            or not self.cost_total.is_finite()
+            or self.cost_total < 0
+        ):
             raise ValueError("custo_finops_invalido")
 
 
