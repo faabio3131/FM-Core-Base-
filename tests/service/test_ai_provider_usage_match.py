@@ -58,11 +58,11 @@ def signed_statement(*, overrides=None):
 
 
 def check(sessions, policy, raw, signature, now, **scope):
-    args = dict(
-        sessions=sessions,source_payload=raw,source_signature=signature,
-        source_policy=policy,tenant_id="tenant-a",unit_id="unit-a",
-        request_id="req-1",at=now,
-    )
+    args = {
+        "sessions": sessions, "source_payload": raw, "source_signature": signature,
+        "source_policy": policy, "tenant_id": "tenant-a", "unit_id": "unit-a",
+        "request_id": "req-1", "at": now,
+    }
     args.update(scope)
     return match_signed_provider_attempt(**args)
 
