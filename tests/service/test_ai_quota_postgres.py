@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import Barrier
 
@@ -16,6 +16,7 @@ from alembic import command
 from core.ai_circuit_breaker import CircuitDenied, CircuitPhase, CircuitPolicy
 from core.ai_circuit_state_store import PersistentCircuit, ProviderCircuitRecord
 from core.ai_control_plane import AIProvider
+from core.ai_usage_ledger import AIUsageRecord, PersistentAIFinOps
 from core.ai_quota_store import (
     AIQuotaPolicyRecord,
     AIQuotaReservationRecord,
@@ -421,3 +422,52 @@ def test_pg_signed_command_recovery_exactly_once_with_service_fence(postgres_quo
             CommandAdminAuditRecord.resource_id == f"{tenant}:{request_id}",
         )).all()
         assert len(audits) == 1
+
+
+def test_pg_finops_pending_reconciliation_is_bounded_and_tenant_scoped(postgres_quota):
+    """Run the same SQL GROUP BY/HAVING query against disposable PostgreSQL."""
+    _, sessions = postgres_quota
+    tenant = "pg-p01-backlog"
+    unit = "unit-a"
+    with sessions.begin() as db:
+        db.query(AIUsageRecord).filter(
+            AIUsageRecord.tenant_id == tenant,
+        ).delete(synchronize_session=False)
+        for event_id, request_id, tenant_scope, unit_scope, cost, inp in (
+            ("pg-backlog-1", "req-known", tenant, unit, "0.004", 12),
+            ("pg-backlog-2", "req-pending", tenant, unit, "0.004", 12),
+            ("pg-backlog-3", "req-pending", tenant, unit, None, None),
+            ("pg-backlog-4", "req-foreign", tenant, "other", None, None),
+            ("pg-backlog-5", "req-stranger", "another-tenant", unit, None, None),
+        ):
+            db.add(AIUsageRecord(
+                event_id=event_id, tenant_id=tenant_scope, unit_id=unit_scope,
+                request_id=request_id, correlation_id="pg-backlog",
+                capability="atendimento_interpretacao", provider="gemini",
+                model="model-synthetic", route_reason="test", fallback_used=cost is None,
+                fallback_reason=None, input_tokens=inp, output_tokens=3 if inp else None,
+                cached_tokens=None, latency_ms=1, outcome="success",
+                cost_decimal=cost, currency="USD" if cost else "XXX",
+                cost_origin="estimated" if cost else "unavailable",
+                price_snapshot_id="snapshot-test", event_time=NOW,
+            ))
+    backlog, truncated = PersistentAIFinOps(sessions).listar_pendencias(
+        tenant_id=tenant, unit_id=unit, inicio=date(2026, 10, 18),
+        fim=date(2026, 10, 18), limit=1,
+    )
+    assert truncated is False
+    assert len(backlog) == 1
+    assert backlog[0].request_id == "req-pending"
+    assert backlog[0].observed_attempts == 2
+    assert backlog[0].unknown_cost_attempts == 1
+    assert backlog[0].incomplete_token_attempts == 1
+    assert backlog[0].fallback_attempts == 1
+    other, _ = PersistentAIFinOps(sessions).listar_pendencias(
+        tenant_id=tenant, unit_id="other", inicio=date(2026, 10, 18),
+        fim=date(2026, 10, 18),
+    )
+    assert [item.request_id for item in other] == ["req-foreign"]
+    with sessions.begin() as db:
+        db.query(AIUsageRecord).filter(
+            AIUsageRecord.tenant_id.in_((tenant, "another-tenant")),
+        ).delete(synchronize_session=False)
