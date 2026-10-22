@@ -11,6 +11,8 @@ from sqlalchemy.orm import sessionmaker
 
 from alembic import command
 from core.ai_control_plane import AIControlPlaneStore, RouteDefinition
+from core.ai_command_authority import VerifiedCommandAdmin
+from core.ai_finops_policy_store import PersistentFinOpsAlertPolicies
 from core.ai_router import AIUsageEvent, CapabilityIA, OutcomeIA
 from core.ai_service_api import create_app
 from core.ai_service_settings import CoreEnvironment, CoreSettings
@@ -202,3 +204,51 @@ def test_pending_usage_operator_api_disabled_by_default(fixture):
             headers={"X-Core-Admin-Key": "operator-secret"},
         )
         assert response.status_code == 404
+
+
+def test_operator_reads_persisted_fm_threshold_and_cannot_override_it(fixture):
+    engine = create_engine(fixture)
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    principal = VerifiedCommandAdmin(
+        user_id="fm-admin", session_id="fm-session",
+        token_id="operator-policy-once-jti-123456",
+        issued_at=1, expires_at=2, step_up_at=1,
+        permissions=frozenset({"core.ai.admin.mutate"}),
+    )
+    store = PersistentFinOpsAlertPolicies(sessions)
+    assert store.update(
+        tenant_id="tenant-a", unit_id="unit-1", expected_revision=0,
+        enabled=True, currency="USD", maximum_known_cost=__import__("decimal").Decimal("0.03"),
+        principal=principal,
+    ).revision == 1
+    with TestClient(create_app(_cfg(fixture))) as client:
+        auth = {"X-Core-Admin-Key": "operator-secret"}
+        params = {"tenant_id": "tenant-a", "unit_id": "unit-1"}
+        endpoint = "/v1/admin/ai/finops/alert-policy"
+        assert client.get(endpoint, params=params).status_code == 401
+        assert client.get(endpoint, params=params, headers={
+            "X-Core-Service-Key": "consumer-only",
+        }).status_code == 401
+        config = client.get(endpoint, params=params, headers=auth)
+        assert config.status_code == 200
+        assert config.headers["cache-control"] == "no-store"
+        assert config.json()["revision"] == 1
+        assert config.json()["maximum_known_cost"] == "0.03"
+        assert client.post(endpoint, json={}, headers=auth).status_code == 405
+        assert client.get(endpoint, params={**params, "tenant_id": "foreign"},
+                          headers=auth).json()["configured"] is False
+
+        usage_params = {**params, "request_id": "req"}
+        alert = client.get(
+            "/v1/admin/ai/usage/request", params=usage_params, headers=auth,
+        )
+        assert alert.status_code == 200
+        assert alert.json()["policy_revision"] == 1
+        assert alert.json()["policy_enabled"] is True
+        assert alert.json()["reasons"] == ["provider_cost_unverified"]
+        assert client.get(
+            "/v1/admin/ai/usage/request",
+            params={**usage_params, "maximum_known_cost": "999", "currency": "USD"},
+            headers=auth,
+        ).status_code == 422
+    engine.dispose()
