@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, case, func, or_, select
 from sqlalchemy.orm import Mapped, Session, mapped_column, sessionmaker
 
 from core.ai_control_plane import ControlPlaneBase, ControlPlaneError
@@ -116,6 +116,19 @@ class AIRequestCostSummary:
     total_attempts: int
     fallback_attempts: int
     all_recorded_costs_known: bool
+
+
+@dataclass(frozen=True, kw_only=True)
+class AIReconciliationBacklogItem:
+    """Observed unresolved attempts in a bounded window, never provider invoice proof."""
+
+    request_id: str
+    first_seen: datetime
+    last_seen: datetime
+    observed_attempts: int
+    unknown_cost_attempts: int
+    incomplete_token_attempts: int
+    fallback_attempts: int
 
 
 class PersistentAIFinOps:
@@ -258,6 +271,77 @@ class PersistentAIFinOps:
                     event_time=evento.timestamp,
                 )
             )
+
+    def listar_pendencias(
+        self, *, tenant_id: str, unit_id: str,
+        inicio: date, fim: date, limit: int = 50,
+    ) -> tuple[tuple[AIReconciliationBacklogItem, ...], bool]:
+        """Find unverified attempts without fetching all events into application memory.
+
+        This is a *windowed observation*, not a statement that a request is
+        fully reconciled elsewhere or that a provider billed nothing.
+        Unknown provider costs and missing input/output tokens are distinct.
+        """
+        if (
+            any(
+                type(value) is not str or not value.strip() or len(value) > 128
+                for value in (tenant_id, unit_id)
+            )
+            or type(inicio) is not date or type(fim) is not date
+            or fim < inicio or (fim - inicio).days >= 31
+            or type(limit) is not int or not 1 <= limit <= 100
+            or fim == date.max
+        ):
+            raise ControlPlaneError("core_finops.pending_scope_invalid")
+
+        start = datetime.combine(inicio, time.min, tzinfo=UTC)
+        end = datetime.combine(date.fromordinal(fim.toordinal() + 1), time.min, tzinfo=UTC)
+        missing_cost = func.sum(case(
+            (AIUsageRecord.cost_decimal.is_(None), 1), else_=0,
+        ))
+        missing_tokens = func.sum(case(
+            (or_(
+                AIUsageRecord.input_tokens.is_(None),
+                AIUsageRecord.output_tokens.is_(None),
+            ), 1), else_=0,
+        ))
+        fallback_count = func.sum(case(
+            (AIUsageRecord.fallback_used.is_(True), 1), else_=0,
+        ))
+        first_seen = func.min(AIUsageRecord.event_time)
+        last_seen = func.max(AIUsageRecord.event_time)
+        query = (
+            select(
+                AIUsageRecord.request_id,
+                first_seen,
+                last_seen,
+                func.count(AIUsageRecord.event_id),
+                missing_cost,
+                missing_tokens,
+                fallback_count,
+            )
+            .where(
+                AIUsageRecord.tenant_id == tenant_id,
+                AIUsageRecord.unit_id == unit_id,
+                AIUsageRecord.event_time >= start,
+                AIUsageRecord.event_time < end,
+            )
+            .group_by(AIUsageRecord.request_id)
+            .having(or_(missing_cost > 0, missing_tokens > 0))
+            .order_by(first_seen, AIUsageRecord.request_id)
+            .limit(limit + 1)
+        )
+        with self._sessions() as db:
+            results = db.execute(query).all()
+        items = tuple(
+            AIReconciliationBacklogItem(
+                request_id=row[0], first_seen=_utc(row[1]), last_seen=_utc(row[2]),
+                observed_attempts=row[3], unknown_cost_attempts=row[4],
+                incomplete_token_attempts=row[5], fallback_attempts=row[6],
+            )
+            for row in results[:limit]
+        )
+        return items, len(results) > limit
 
     def reconcile_request(
         self, *, tenant_id: str, unit_id: str, request_id: str,
