@@ -21,6 +21,7 @@ from core.ai_command_quota_readback import command_core_quota_readback_router
 from core.ai_control_plane import ControlPlaneError
 from core.ai_control_plane_bootstrap import build_persistent_core, control_plane_is_ready
 from core.ai_governed_recovery_api import governed_recovery_router
+from core.ai_finops_policy_api import finops_alert_policy_router
 from core.ai_provider_evidence_store import TrustedProviderEvidenceStore
 from core.ai_quota_store import QuotaDenied, QuotaReservations
 from core.ai_router import FalhaRotaDefinitiva, FalhaRotaTransitoria, SemRotaCompativel
@@ -242,6 +243,21 @@ def create_app(
         if any(getattr(r, "path", None) == expected_path for r in app.router.routes):
             raise RuntimeError("core_recovery_route_duplicate")
         app.router.routes.extend(recovery_router.routes)
+
+        # Same RS256 human FM authority + distinct S2S identity; never
+        # enabled automatically for tenants or by the operator read key.
+        policy_router = finops_alert_policy_router(
+            trust=recovery_trust,
+            transport_key=cfg.governed_recovery_transport_key or "",
+        )
+        policy_path = "/internal/v1/command/ai/finops/alert-policy"
+        if len(policy_router.routes) != 1 or (
+            getattr(policy_router.routes[0], "path", None) != policy_path
+        ):
+            raise RuntimeError("core_finops_policy_route_invalid")
+        if any(getattr(r, "path", None) == policy_path for r in app.router.routes):
+            raise RuntimeError("core_finops_policy_route_duplicate")
+        app.router.routes.extend(policy_router.routes)
 
     def require_service_key(
         request: Request,
