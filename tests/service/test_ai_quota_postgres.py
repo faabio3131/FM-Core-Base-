@@ -16,7 +16,6 @@ from alembic import command
 from core.ai_circuit_breaker import CircuitDenied, CircuitPhase, CircuitPolicy
 from core.ai_circuit_state_store import PersistentCircuit, ProviderCircuitRecord
 from core.ai_control_plane import AIProvider
-from core.ai_usage_ledger import AIUsageRecord, PersistentAIFinOps
 from core.ai_quota_store import (
     AIQuotaPolicyRecord,
     AIQuotaReservationRecord,
@@ -24,6 +23,7 @@ from core.ai_quota_store import (
     QuotaRequirement,
     QuotaReservations,
 )
+from core.ai_usage_ledger import AIUsageRecord, PersistentAIFinOps
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 
