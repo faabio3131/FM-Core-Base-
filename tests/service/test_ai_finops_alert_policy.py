@@ -41,10 +41,10 @@ def principal(jti="synthetic-jti-unique-0123456789"):
 
 
 def set_policy(store, *, jti="synthetic-jti-unique-0123456789", expected=0, **change):
-    data = dict(tenant_id="tenant-a", unit_id="unit-a",
-                expected_revision=expected, enabled=True,
-                currency="USD", maximum_known_cost=Decimal("0.05"),
-                principal=principal(jti))
+    data = {"tenant_id": "tenant-a", "unit_id": "unit-a",
+            "expected_revision": expected, "enabled": True,
+            "currency": "USD", "maximum_known_cost": Decimal("0.05"),
+            "principal": principal(jti)}
     data.update(change)
     return store.update(**data)
 
@@ -63,7 +63,7 @@ def test_policy_cas_audit_scope_replay_and_disable_atomic(store):
     assert policies.get(tenant_id="tenant-a", unit_id="unit-a").revision == 1
     updated = set_policy(
         policies, jti="third-unique-jti-0000000", expected=1,
-        enabled=False, maximum_known_cost=Decimal("10"),
+        enabled=False, maximum_known_cost=Decimal(10),
     )
     assert updated.revision == 2 and not updated.enabled
     with sessions() as db:
@@ -79,9 +79,9 @@ def test_policy_cas_audit_scope_replay_and_disable_atomic(store):
     {"currency": "DOLLAR"},
     {"maximum_known_cost": Decimal("NaN")},
     {"maximum_known_cost": Decimal("Infinity")},
-    {"maximum_known_cost": Decimal("0")},
+    {"maximum_known_cost": Decimal(0)},
     {"maximum_known_cost": Decimal("-0.1")},
-    {"maximum_known_cost": Decimal("1000000001")},
+    {"maximum_known_cost": Decimal(1000000001)},
     {"tenant_id": "foreign tenant"},
     {"expected_revision": True},
     {"expected_revision": -1},
@@ -108,20 +108,20 @@ def test_http_requires_both_service_identity_and_recent_human_step_up(store):
     app = FastAPI()
     app.state.control_plane_engine = sessions.kw["bind"]
     app.include_router(finops_alert_policy_router(trust=trust, transport_key=transport))
-    body = dict(
-        tenant_id="tenant-a", unit_id="unit-a", expected_revision=0,
-        enabled=True, currency="USD", maximum_known_cost="0.05",
-    )
+    body = {
+        "tenant_id": "tenant-a", "unit_id": "unit-a", "expected_revision": 0,
+        "enabled": True, "currency": "USD", "maximum_known_cost": "0.05",
+    }
     path = "/internal/v1/command/ai/finops/alert-policy"
     now = int(datetime.now(UTC).timestamp())
 
     def jwt_for(jti, **overrides):
-        claims = dict(
-            iss="fm-command", aud="fm-core-recovery", sub="fm-admin",
-            jti=jti, session_id="fm-session", iat=now, nbf=now, exp=now + 120,
-            step_up_at=now, actor_type="human", role="platform_admin",
-            scope="fm_core_platform", permissions=["core.ai.admin.mutate"],
-        )
+        claims = {
+            "iss": "fm-command", "aud": "fm-core-recovery", "sub": "fm-admin",
+            "jti": jti, "session_id": "fm-session", "iat": now, "nbf": now, "exp": now + 120,
+            "step_up_at": now, "actor_type": "human", "role": "platform_admin",
+            "scope": "fm_core_platform", "permissions": ["core.ai.admin.mutate"],
+        }
         claims.update(overrides)
         return jwt.encode(claims, private, algorithm="RS256")
 
