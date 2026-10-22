@@ -20,8 +20,8 @@ from core.ai_command_authority import CommandTrustPolicy, VerifiedCommandAdmin
 from core.ai_command_quota_readback import command_core_quota_readback_router
 from core.ai_control_plane import ControlPlaneError
 from core.ai_control_plane_bootstrap import build_persistent_core, control_plane_is_ready
-from core.ai_governed_recovery_api import governed_recovery_router
 from core.ai_finops_policy_api import finops_alert_policy_router
+from core.ai_governed_recovery_api import governed_recovery_router
 from core.ai_provider_evidence_store import TrustedProviderEvidenceStore
 from core.ai_quota_store import QuotaDenied, QuotaReservations
 from core.ai_router import FalhaRotaDefinitiva, FalhaRotaTransitoria, SemRotaCompativel
