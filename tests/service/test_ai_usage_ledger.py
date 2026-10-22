@@ -372,3 +372,49 @@ def test_reconciliation_backlog_rejects_unbounded_or_ambiguous_inputs(ledger, ch
     }
     with pytest.raises(ControlPlaneError, match="pending_scope_invalid"):
         store.listar_pendencias(**{**valid, **changes})
+
+
+def test_finops_alert_inbox_paginates_stably_and_never_crosses_tenant(ledger):
+    store, _ = ledger
+    store.add_price_snapshot(price())
+    for request_id in ("a", "b", "c"):
+        store.registrar(event(request=request_id))
+    store.registrar(event(request="other-unit", unit="other"))
+    store.registrar(event(request="other-tenant", tenant="b"))
+    params = {
+        "tenant_id": "a", "unit_id": "u",
+        "inicio": date(2026, 10, 18), "fim": date(2026, 10, 18),
+        "limit": 2,
+    }
+    first, cursor = store.listar_ids_solicitacoes(**params)
+    assert first == ("a", "b")
+    assert cursor == "b"
+    second, next_cursor = store.listar_ids_solicitacoes(
+        **params, after_request_id=cursor,
+    )
+    assert second == ("c",)
+    assert next_cursor is None
+    assert store.listar_ids_solicitacoes(
+        **{**params, "inicio": date(2026, 10, 19),
+           "fim": date(2026, 10, 19)},
+    ) == ((), None)
+
+
+@pytest.mark.parametrize("changes", [
+    {"tenant_id": " "}, {"unit_id": ""}, {"limit": True},
+    {"limit": 0}, {"limit": 101}, {"limit": 1.5},
+    {"fim": date.max}, {"fim": date(2026, 11, 30)},
+    {"inicio": date(2026, 10, 19)},
+    {"after_request_id": " "},
+    {"after_request_id": "x "},
+    {"after_request_id": "x" * 129},
+])
+def test_finops_alert_inbox_rejects_unsafe_scope_and_cursor(ledger, changes):
+    store, _ = ledger
+    valid = {
+        "tenant_id": "a", "unit_id": "u",
+        "inicio": date(2026, 10, 18),
+        "fim": date(2026, 10, 18), "limit": 50,
+    }
+    with pytest.raises(ControlPlaneError, match="alert_inbox_scope_invalid"):
+        store.listar_ids_solicitacoes(**{**valid, **changes})
