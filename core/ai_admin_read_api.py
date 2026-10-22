@@ -11,6 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -135,6 +136,52 @@ def register_admin_read_routes(app: FastAPI) -> None:
             }
             for item in buckets
         ]
+
+    @router.get("/usage/pending")
+    def pending_usage_reconciliation(
+        request: Request,
+        tenant_id: str = Query(min_length=1, max_length=128),
+        unit_id: str = Query(min_length=1, max_length=128),
+        start_date: date = Query(),
+        end_date: date = Query(),
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> JSONResponse:
+        """FM operator-only queue; observations do not attest provider invoices."""
+        try:
+            items, truncated = PersistentAIFinOps(_sessions(request)).listar_pendencias(
+                tenant_id=tenant_id, unit_id=unit_id,
+                inicio=start_date, fim=end_date, limit=limit,
+            )
+        except ControlPlaneError as exc:
+            raise HTTPException(
+                status_code=422, detail="core_operator_pending_scope_invalid",
+            ) from exc
+        except (SQLAlchemyError, ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=503, detail="core_operator_pending_unavailable",
+            ) from exc
+        return JSONResponse(
+            {
+                "tenant_id": tenant_id, "unit_id": unit_id,
+                "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
+                "status": "needs_attention" if items else "no_pending_observations",
+                "truncated": truncated,
+                "provider_invoice_verified": False,
+                "items": [
+                    {
+                        "request_id": item.request_id,
+                        "first_seen": item.first_seen.isoformat(),
+                        "last_seen": item.last_seen.isoformat(),
+                        "observed_attempts": item.observed_attempts,
+                        "unknown_cost_attempts": item.unknown_cost_attempts,
+                        "incomplete_token_attempts": item.incomplete_token_attempts,
+                        "fallback_attempts": item.fallback_attempts,
+                    }
+                    for item in items
+                ],
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.get("/usage/request")
     def request_finops_alert(
