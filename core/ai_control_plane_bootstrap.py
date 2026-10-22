@@ -28,7 +28,7 @@ from core.ai_tenant_credential_resolver import (
 from core.ai_usage_ledger import PersistentAIFinOps
 from core.seguranca.segredos import ReferenceSecretStore
 
-REQUIRED_REVISION = "f3_0005"
+REQUIRED_REVISION = "f3_0006"
 REQUIRED_TABLES = frozenset(ControlPlaneBase.metadata.tables) | {
     admin_audit.CommandAdminAuditRecord.__tablename__,
     "core_ai_price_snapshots",
