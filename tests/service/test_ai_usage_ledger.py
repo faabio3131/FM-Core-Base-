@@ -293,3 +293,22 @@ def test_corrupt_attempt_cost_cannot_be_offset_by_valid_positive_cost(ledger, ta
         store.reconcile_request(tenant_id="a", unit_id="u", request_id="bad-cost")
     with pytest.raises(ControlPlaneError, match="invalid_known_cost"):
         _list(store)
+
+
+def test_two_physical_provider_calls_same_request_and_route_are_both_accounted(ledger):
+    store, _ = ledger
+    store.add_price_snapshot(price())
+    first = replace(event(request="two-physical-calls"), attempt_id="physical-001")
+    second = replace(first, attempt_id="physical-002")
+    store.registrar(first)
+    store.registrar(first)  # duplicate delivery of SAME physical attempt
+    store.registrar(second)  # separate provider call, identical route/request/counters
+    summary = store.reconcile_request(
+        tenant_id="a", unit_id="u", request_id="two-physical-calls",
+    )
+    assert summary.total_attempts == 2
+    assert summary.known_attempts == 2
+    assert summary.known_total == Decimal("0.10")
+    assert summary.all_recorded_costs_known is True
+    entries = _list(store)
+    assert sum(item.attempts for item in entries) == 2
