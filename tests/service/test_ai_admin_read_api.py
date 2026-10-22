@@ -17,7 +17,7 @@ from core.ai_finops_policy_store import PersistentFinOpsAlertPolicies
 from core.ai_router import AIUsageEvent, CapabilityIA, OutcomeIA
 from core.ai_service_api import create_app
 from core.ai_service_settings import CoreEnvironment, CoreSettings
-from core.ai_usage_ledger import PersistentAIFinOps
+from core.ai_usage_ledger import AIUsageRecord, PersistentAIFinOps
 
 
 @pytest.fixture
@@ -252,4 +252,73 @@ def test_operator_reads_persisted_fm_threshold_and_cannot_override_it(fixture):
             params={**usage_params, "maximum_known_cost": "999", "currency": "USD"},
             headers=auth,
         ).status_code == 422
+    engine.dispose()
+
+
+def test_fm_alert_inbox_is_paginated_authorized_and_applies_policy(fixture):
+    engine = create_engine(fixture)
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    with sessions.begin() as db:
+        db.add(AIUsageRecord(
+            event_id="alert-known", tenant_id="tenant-a", unit_id="unit-1",
+            request_id="known", correlation_id="correlation",
+            capability="atendimento_interpretacao", provider="openai",
+            model="model-test", route_reason="primary", fallback_used=False,
+            fallback_reason=None, input_tokens=1000, output_tokens=1000,
+            cached_tokens=None, latency_ms=1, outcome="success",
+            cost_decimal="0.05", currency="USD", cost_origin="estimated",
+            price_snapshot_id="p1", event_time=datetime(2026, 10, 18, 11, tzinfo=UTC),
+        ))
+    store = PersistentFinOpsAlertPolicies(sessions)
+    principal = VerifiedCommandAdmin(
+        user_id="fm-admin", session_id="fm-session",
+        token_id="alert-list-unique-jti-123456",
+        issued_at=1, expires_at=2, step_up_at=1,
+        permissions=frozenset({"core.ai.admin.mutate"}),
+    )
+    store.update(
+        tenant_id="tenant-a", unit_id="unit-1",
+        expected_revision=0, enabled=True, currency="USD",
+        maximum_known_cost=Decimal("0.03"), principal=principal,
+    )
+    params = {
+        "tenant_id": "tenant-a", "unit_id": "unit-1",
+        "start_date": "2026-10-18", "end_date": "2026-10-18",
+        "limit": 1,
+    }
+    endpoint = "/v1/admin/ai/usage/alerts"
+    auth = {"X-Core-Admin-Key": "operator-secret"}
+    with TestClient(create_app(_cfg(fixture))) as client:
+        assert client.get(endpoint, params=params).status_code == 401
+        first = client.get(endpoint, params=params, headers=auth)
+        assert first.status_code == 200
+        assert first.headers["cache-control"] == "no-store"
+        data = first.json()
+        assert data["policy_revision"] == 1
+        assert data["provider_invoice_verified"] is False
+        assert data["has_more"] is True
+        assert data["next_cursor"] == "known"
+        assert data["items"][0]["status"] == "needs_attention"
+        assert data["items"][0]["reasons"] == ["known_subtotal_above_limit"]
+        assert data["items"][0]["known_cost_subtotal"] == "0.05"
+        assert data["items"][0]["provider_invoice_verified"] is False
+        second = client.get(
+            endpoint, params={**params, "after_request_id": data["next_cursor"]},
+            headers=auth,
+        )
+        assert second.status_code == 200
+        assert second.json()["has_more"] is False
+        assert second.json()["items"][0]["request_id"] == "req"
+        assert second.json()["items"][0]["reasons"] == ["provider_cost_unverified"]
+        assert second.json()["items"][0]["unknown_attempts"] == 1
+        assert client.get(endpoint, params={
+            **params, "tenant_id": "foreign",
+        }, headers=auth).json()["items"] == []
+        assert client.get(endpoint, params={
+            **params, "limit": 101,
+        }, headers=auth).status_code == 422
+        assert client.get(endpoint, params={
+            **params, "end_date": "2026-11-22",
+        }, headers=auth).status_code == 422
+        assert client.post(endpoint, json=params, headers=auth).status_code == 405
     engine.dispose()
