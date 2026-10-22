@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from time import perf_counter
-from uuid import uuid4
 from typing import Any, Protocol
+from uuid import uuid4
 
 
 class CapabilityIA(StrEnum):
