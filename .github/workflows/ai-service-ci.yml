@@ -40,6 +40,10 @@ jobs:
           core/ai_assistant_credential_gateway.py
           core/ai_admin_audit.py
           core/ai_usage_ledger.py
+          core/ai_finops.py
+          core/ai_finops_alerts.py
+          core/ai_command_finops_api.py
+          tests/test_ai_command_finops_api.py
           alembic/env.py
           alembic/versions/0001_f3_ai_control_plane.py
           alembic/versions/0002_f3_command_admin_audit.py
@@ -56,6 +60,6 @@ jobs:
       - name: Ruff Core command readback and runtime mount
         run: ruff check core/ai_command_quota_readback.py tests/test_ai_command_quota_readback.py tests/test_ai_command_quota_runtime_mount.py
       - name: Core Command signed readback contract and actual runtime mount
-        run: pytest -q tests/test_ai_command_quota_readback.py tests/test_ai_command_quota_runtime_mount.py
+        run: pytest -q tests/test_ai_command_quota_readback.py tests/test_ai_command_quota_runtime_mount.py tests/test_ai_command_finops_api.py
       - name: AI service tests
         run: pytest tests/unit/ai_router tests/service
