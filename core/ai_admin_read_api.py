@@ -23,6 +23,7 @@ from core.ai_control_plane import (
     ControlPlaneError,
 )
 from core.ai_finops_alerts import evaluate_request_cost_alert
+from core.ai_finops_policy_store import PersistentFinOpsAlertPolicies
 from core.ai_router import CapabilityIA
 from core.ai_usage_ledger import PersistentAIFinOps
 
@@ -183,6 +184,29 @@ def register_admin_read_routes(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store"},
         )
 
+    @router.get("/finops/alert-policy")
+    def read_finops_alert_policy(
+        request: Request,
+        tenant_id: str = Query(min_length=1, max_length=128),
+        unit_id: str = Query(min_length=1, max_length=128),
+    ) -> JSONResponse:
+        try:
+            policy = PersistentFinOpsAlertPolicies(_sessions(request)).get(
+                tenant_id=tenant_id, unit_id=unit_id,
+            )
+        except ControlPlaneError as exc:
+            raise HTTPException(status_code=422, detail="core_finops.alert_scope_invalid") from exc
+        except SQLAlchemyError as exc:
+            raise HTTPException(status_code=503, detail="core_finops.alert_unavailable") from exc
+        return JSONResponse({
+            "tenant_id": tenant_id, "unit_id": unit_id,
+            "configured": policy is not None,
+            "revision": policy.revision if policy else None,
+            "enabled": policy.enabled if policy else False,
+            "currency": policy.currency if policy else None,
+            "maximum_known_cost": str(policy.maximum_known_cost) if policy else None,
+        }, headers={"Cache-Control": "no-store"})
+
     @router.get("/usage/request")
     def request_finops_alert(
         request: Request,
@@ -194,12 +218,27 @@ def register_admin_read_routes(app: FastAPI) -> None:
     ) -> dict[str, object]:
         """Pure operator read: unknown cost remains UNKNOWN, not accounting zero."""
         try:
-            summary = PersistentAIFinOps(_sessions(request)).reconcile_request(
+            sessions = _sessions(request)
+            policy = PersistentFinOpsAlertPolicies(sessions).get(
+                tenant_id=tenant_id, unit_id=unit_id,
+            )
+            # A caller cannot override or bypass FM's persisted policy.
+            if policy is not None and (
+                maximum_known_cost is not None or currency is not None
+            ):
+                raise ValueError("finops.alert_override_denied")
+            summary = PersistentAIFinOps(sessions).reconcile_request(
                 tenant_id=tenant_id, unit_id=unit_id, request_id=request_id,
             )
             alert = evaluate_request_cost_alert(
-                summary, maximum_known_cost=maximum_known_cost,
-                currency=currency,
+                summary,
+                maximum_known_cost=(
+                    policy.maximum_known_cost if policy and policy.enabled
+                    else maximum_known_cost
+                ),
+                currency=(
+                    policy.currency if policy and policy.enabled else currency
+                ),
             )
         except (ControlPlaneError, SQLAlchemyError) as exc:
             raise HTTPException(
@@ -219,6 +258,8 @@ def register_admin_read_routes(app: FastAPI) -> None:
             "unknown_attempts": alert.unknown_attempts,
             "observed_attempts": alert.observed_attempts,
             "all_costs_known": alert.all_costs_known,
+            "policy_revision": policy.revision if policy else None,
+            "policy_enabled": policy.enabled if policy else False,
         }
 
     app.include_router(router)
