@@ -80,6 +80,8 @@ def match_signed_provider_attempt(
         if event.input_tokens == receipt.input_tokens
         and event.output_tokens == receipt.output_tokens
     ]
+    if not matches and len(events) == 1:
+        raise ControlPlaneError("core_finops.provider_match_mismatch")
     if len(matches) != 1:
         raise ControlPlaneError("core_finops.provider_match_ambiguous_attempts")
     event = matches[0]
