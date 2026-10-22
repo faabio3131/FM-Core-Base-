@@ -196,6 +196,11 @@ class PersistentAIFinOps:
             event.outcome.value,
             str(event.fallback_used),
         )
+        # Preserve historical IDs for legacy recordings with no attempt_id,
+        # while counting each physical provider call (including repeat route)
+        # as its own immutable financial event. Replay of one event stays stable.
+        if event.attempt_id is not None:
+            fields = (*fields, "physical_attempt", event.attempt_id)
         return sha256("\x1f".join(fields).encode("utf-8")).hexdigest()
 
     def registrar(self, evento: AIUsageEvent) -> None:
