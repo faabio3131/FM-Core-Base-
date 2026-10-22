@@ -132,3 +132,65 @@ def test_cost_unknown_stays_unknown_even_with_verified_usage_statement(ledger):
     assert match.internally_estimated_cost_usd is None
     assert match.provider_statement_cost_usd == Decimal("0.006")
     assert match.invoice_verified is False
+
+
+def _insert_attempt(
+    db, *, event_id: str, provider="verified-provider", model="model-a",
+    inp=100, out=50, outcome="success", fallback=False,
+):
+    db.add(AIUsageRecord(
+        event_id=event_id, tenant_id="tenant-a", unit_id="unit-a",
+        request_id="req-1", correlation_id="corr", capability="text",
+        provider=provider, model=model, route_reason="fallback" if fallback else "initial",
+        fallback_used=fallback, fallback_reason="retry" if fallback else None,
+        input_tokens=inp, output_tokens=out, cached_tokens=None,
+        latency_ms=20, outcome=outcome, cost_decimal=None,
+        currency="XXX", cost_origin="unavailable", price_snapshot_id="p1",
+        event_time=datetime.now(UTC),
+    ))
+
+
+def test_signed_provider_receipt_identifies_unique_successful_fallback(ledger):
+    policy, raw, signature, now = signed_statement()
+    with ledger.begin() as db:
+        first = db.get(AIUsageRecord, "attempt-1")
+        first.fallback_used = True
+        first.fallback_reason = "other-provider-failed-first"
+        _insert_attempt(
+            db, event_id="attempt-early-failed", provider="different-provider",
+            outcome="transient_failure", inp=None, out=None,
+        )
+    matched = check(ledger, policy, raw, signature, now)
+    assert matched.attempt_id == "attempt-1"
+    assert matched.matched_fallback_attempt is True
+    assert matched.invoice_verified is False
+
+
+def test_duplicate_matching_attempts_fail_closed_without_attribution(ledger):
+    policy, raw, signature, now = signed_statement()
+    with ledger.begin() as db:
+        _insert_attempt(db, event_id="attempt-cloned", fallback=True)
+    with pytest.raises(ControlPlaneError, match="provider_match_ambiguous_attempts"):
+        check(ledger, policy, raw, signature, now)
+
+
+def test_unknown_usage_on_same_provider_blocks_false_unique_match(ledger):
+    policy, raw, signature, now = signed_statement()
+    with ledger.begin() as db:
+        _insert_attempt(
+            db, event_id="attempt-unmetered", inp=None, out=None, fallback=True,
+        )
+    with pytest.raises(ControlPlaneError, match="provider_match_ambiguous_attempts"):
+        check(ledger, policy, raw, signature, now)
+
+
+def test_signed_statement_never_matches_truncated_attempt_history(ledger):
+    policy, raw, signature, now = signed_statement()
+    with ledger.begin() as db:
+        for i in range(101):
+            _insert_attempt(
+                db, event_id=f"attempt-excess-{i}", provider="different-provider",
+                outcome="transient_failure", inp=None, out=None,
+            )
+    with pytest.raises(ControlPlaneError, match="provider_match_unbounded_attempts"):
+        check(ledger, policy, raw, signature, now)
