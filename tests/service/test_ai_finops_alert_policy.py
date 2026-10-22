@@ -95,7 +95,6 @@ def test_policy_rejects_malformed_or_unauthorized_mutations(store, changes):
 
 def test_http_requires_both_service_identity_and_recent_human_step_up(store):
     from fastapi import FastAPI
-    from types import SimpleNamespace
 
     policies, sessions = store
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
