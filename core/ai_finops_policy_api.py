@@ -64,11 +64,16 @@ def finops_alert_policy_router(
             raise HTTPException(status_code=403, detail="core_finops.alert_denied") from exc
         if not _NONNEGATIVE_DECIMAL.fullmatch(payload.maximum_known_cost):
             raise HTTPException(status_code=422, detail="core_finops.alert_cost_invalid")
+        try:
+            amount = Decimal(payload.maximum_known_cost)
+        except InvalidOperation as exc:
+            raise HTTPException(status_code=422, detail="core_finops.alert_cost_invalid") from exc
+        if not amount.is_finite() or not Decimal(0) < amount <= Decimal(1000000000):
+            raise HTTPException(status_code=422, detail="core_finops.alert_cost_invalid")
         engine = getattr(request.app.state, "control_plane_engine", None)
         if engine is None:
             raise HTTPException(status_code=503, detail="core_finops.alert_unavailable")
         try:
-            amount = Decimal(payload.maximum_known_cost)
             PersistentFinOpsAlertPolicies(
                 sessionmaker(engine, expire_on_commit=False),
             ).update(
